@@ -1,0 +1,43 @@
+substitutions:
+  devicename: "smartled"
+  nicename: "Smart LED"
+
+esphome:
+  name: "${devicename}"
+  friendly_name: "${nicename}"
+  comment: "LSC 10m Smart LED Strip RGB/CCT"
+
+bk72xx:
+  board: generic-bk7231n-qfn32-tuya
+
+# Enable logging
+logger:
+  level: INFO
+
+# Enable Home Assistant API
+api:
+  encryption:
+    key: "REDACTED"
+  reboot_timeout: 10min
+
+ota:
+  - platform: esphome
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  fast_connect: true
+  reboot_timeout: 10min
+  power_save_mode: none
+
+  # Enable fallback hotspot (captive portal) in case wifi connection fails
+  ap:
+    ssid: "${devicename} fAP"
+    password: "REDACTED"
+
+captive_portal:
+# web_server:
+########################################
+
+packages:
+  common: !include includes/smartled-common.yaml

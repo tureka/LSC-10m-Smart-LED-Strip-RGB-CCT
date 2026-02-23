@@ -1,0 +1,1395 @@
+remote_receiver:
+  pin:
+    number: P26
+    inverted: true
+    mode:
+      input: true
+      pullup: true
+  # dump: nec
+  idle: 20ms
+  buffer_size: 1kb
+
+button:
+  # SHORT CLICK
+  - platform: template
+    name: "Button - Short click"
+    id: ha_short_click
+    icon: "mdi:gesture-tap"
+    on_press:
+      then:
+        - lambda: |-
+            if (id(cct_light).current_values.is_on()) {
+              id(active_light) = 0;
+              id(next_cct_temp).execute();
+              return;
+            }
+
+            if (id(rgb_light).current_values.is_on()) {
+              id(active_light) = 1;
+              id(next_effect).execute();
+              return;
+            }
+
+  # LONG CLICK
+  - platform: template
+    name: "Button - Long click"
+    id: ha_long_click
+    icon: "mdi:gesture-tap-hold"
+    on_press:
+      then:
+        - lambda: |-
+            bool rgb_on = id(rgb_light).current_values.is_on();
+            bool cct_on = id(cct_light).current_values.is_on();
+
+            if (!rgb_on && !cct_on) {
+              id(active_light) = 0;
+              id(cct_light).turn_on().perform();
+              return;
+            }
+            if (cct_on) {
+              id(active_light) = 1;
+              id(cct_light).turn_off().perform();
+              id(rgb_light).turn_on().perform();
+              return;
+            }
+            if (rgb_on) {
+              id(active_light) = 0;
+              id(rgb_light).turn_off().perform();
+              return;
+            }
+
+binary_sensor:
+  - platform: gpio
+    id: btn_input
+    pin:
+      number: P9
+      mode: INPUT_PULLUP
+      inverted: true
+    name: "Button"
+
+    on_press:
+      then:
+        - lambda: |-
+            id(button_press_time) = millis();
+
+    on_release:
+      then:
+        - lambda: |-
+            int duration = millis() - id(button_press_time);
+
+            // LONG CLICK (>600 ms)
+            if (duration > 600) {
+              bool rgb_on = id(rgb_light).current_values.is_on();
+              bool cct_on = id(cct_light).current_values.is_on();
+
+              if (!rgb_on && !cct_on) {
+                id(active_light) = 0;
+                id(cct_light).turn_on().perform();
+                return;
+              }
+              if (cct_on) {
+                id(active_light) = 1;
+                id(cct_light).turn_off().perform();
+                id(rgb_light).turn_on().perform();
+                return;
+              }
+              if (rgb_on) {
+                id(active_light) = 0;
+                id(rgb_light).turn_off().perform();
+                return;
+              }
+              return;
+            }
+
+            // SHORT CLICK (<400 ms)
+            if (duration < 400) {
+
+              // If CCT is on → light temp change
+              if (id(cct_light).current_values.is_on()) {
+                id(active_light) = 0;
+                id(next_cct_temp).execute();
+                return;
+              }
+
+              // If RGB is on → effect change
+              if (id(rgb_light).current_values.is_on()) {
+                id(active_light) = 1;
+                id(next_effect).execute();
+                return;
+              }
+            }
+
+  # Remote first row
+  - platform: remote_receiver
+    id: "brightness_up"
+    nec:
+      address: 0xEF00
+      command: 0xE31C
+    on_press:
+      then:
+        - if:
+            condition:
+              lambda: 'return id(active_light) == 0;'
+            then:
+              - if:
+                  condition:
+                    light.is_off: cct_light
+                  then:
+                    - light.turn_on:
+                        id: cct_light
+                        brightness: 20%
+              - light.dim_relative:
+                  id: cct_light
+                  relative_brightness: 10%
+            else:
+              - if:
+                  condition:
+                    light.is_off: rgb_light
+                  then:
+                    - light.turn_on:
+                        id: rgb_light
+                        brightness: 20%
+              - light.dim_relative:
+                  id: rgb_light
+                  relative_brightness: 10%
+  - platform: remote_receiver
+    id: "brightness_down"
+    nec:
+      address: 0xEF00
+      command: 0xE21D
+    on_press:
+      then:
+        - if:
+            condition:
+              lambda: 'return id(active_light) == 0;'
+            then:
+              - light.dim_relative:
+                  id: cct_light
+                  relative_brightness: -10%
+            else:
+              - light.dim_relative:
+                  id: rgb_light
+                  relative_brightness: -10%
+  - platform: remote_receiver
+    id: "off"
+    nec:
+      address: 0xEF00
+      command: 0xE11E
+    on_press:
+      then:
+        - light.turn_off: rgb_light
+        - light.turn_off: cct_light
+        - globals.set: { id: active_light, value: '0' }
+  - platform: remote_receiver
+    id: "on"
+    nec:
+      address: 0xEF00
+      command: 0xE01F
+    on_press:
+      then:
+        - globals.set: { id: active_light, value: '0' }
+        - light.turn_off: rgb_light
+        - light.turn_on: cct_light
+
+  # Remote second row
+  - platform: remote_receiver
+    id: "red"
+    nec:
+      address: 0xEF00
+      command: 0xFF00
+    on_press:
+      then:
+        - globals.set: { id: active_light, value: '1' }
+        - globals.set: { id: current_color_index, value: '0' }
+        - light.turn_on: rgb_light
+        - script.execute: apply_color
+  - platform: remote_receiver
+    id: "green"
+    nec:
+      address: 0xEF00
+      command: 0xFE01
+    on_press:
+      then:
+        - globals.set: { id: active_light, value: '1' }
+        - globals.set: { id: current_color_index, value: '1' }
+        - light.turn_on: rgb_light
+        - script.execute: apply_color
+  - platform: remote_receiver
+    id: "blue"
+    nec:
+      address: 0xEF00
+      command: 0xFD02
+    on_press:
+      then:
+        - globals.set: { id: active_light, value: '1' }
+        - globals.set: { id: current_color_index, value: '2' }
+        - light.turn_on: rgb_light
+        - script.execute: apply_color
+  - platform: remote_receiver
+    id: "timer_1h"
+    nec:
+      address: 0xEF00
+      command: 0xFC03
+    on_press:
+      then:
+        - lambda: |-
+            if (id(active_timer) == 1) {
+              id(active_timer) = -1;
+              return;
+            }
+        - script.execute: timer_1h_script
+#  - platform: remote_receiver
+#    id: "timer_1h"
+#    nec:
+#      address: 0xEF00
+#      command: 0xFC03
+#    on_press:
+#      then:
+#        - homeassistant.event:
+#            event: lsc_led_timer_1h
+
+  # Remote third row
+  - platform: remote_receiver
+    id: "orange"
+    nec:
+      address: 0xEF00
+      command: 0xFB04
+    on_press:
+      then:
+        - globals.set: { id: active_light, value: '1' }
+        - globals.set: { id: current_color_index, value: '3' }
+        - light.turn_on: rgb_light
+        - script.execute: apply_color
+  - platform: remote_receiver
+    id: "light_green"
+    nec:
+      address: 0xEF00
+      command: 0xFA05
+    on_press:
+      then:
+        - globals.set: { id: active_light, value: '1' }
+        - globals.set: { id: current_color_index, value: '4' }
+        - light.turn_on: rgb_light
+        - script.execute: apply_color
+  - platform: remote_receiver
+    id: "cyan"
+    nec:
+      address: 0xEF00
+      command: 0xF906
+    on_press:
+      then:
+        - globals.set: { id: active_light, value: '1' }
+        - globals.set: { id: current_color_index, value: '5' }
+        - light.turn_on: rgb_light
+        - script.execute: apply_color
+  - platform: remote_receiver
+    id: "timer_2h"
+    nec:
+      address: 0xEF00
+      command: 0xF807
+    on_press:
+      then:
+        - lambda: |-
+            if (id(active_timer) == 2) {
+              id(active_timer) = -1;
+              return;
+            }
+        - script.execute: timer_2h_script
+#  - platform: remote_receiver
+#    id: "timer_2h"
+#    nec:
+#      address: 0xEF00
+#      command: 0xF807
+#    on_press:
+#      then:
+#        - homeassistant.event:
+#            event: lsc_led_timer_2h
+
+  # Remote fourth row
+  - platform: remote_receiver
+    id: "yellow"
+    nec:
+      address: 0xEF00
+      command: 0xF708
+    on_press:
+      then:
+        - globals.set: { id: active_light, value: '1' }
+        - globals.set: { id: current_color_index, value: '6' }
+        - light.turn_on: rgb_light
+        - script.execute: apply_color
+  - platform: remote_receiver
+    id: "teal"
+    nec:
+      address: 0xEF00
+      command: 0xF609
+    on_press:
+      then:
+        - globals.set: { id: active_light, value: '1' }
+        - globals.set: { id: current_color_index, value: '7' }
+        - light.turn_on: rgb_light
+        - script.execute: apply_color
+  - platform: remote_receiver
+    id: "purple"
+    nec:
+      address: 0xEF00
+      command: 0xF50A
+    on_press:
+      then:
+        - globals.set: { id: active_light, value: '1' }
+        - globals.set: { id: current_color_index, value: '8' }
+        - light.turn_on: rgb_light
+        - script.execute: apply_color
+  - platform: remote_receiver
+    id: "timer_3h"
+    nec:
+      address: 0xEF00
+      command: 0xF40B
+    on_press:
+      then:
+        - lambda: |-
+            if (id(active_timer) == 3) {
+              id(active_timer) = -1;
+              return;
+            }
+        - script.execute: timer_3h_script
+#  - platform: remote_receiver
+#    id: "timer_3h"
+#    nec:
+#      address: 0xEF00
+#      command: 0xF40B
+#    on_press:
+#      then:
+#        - homeassistant.event:
+#            event: lsc_led_timer_3h
+
+  # Remote fifth row
+  - platform: remote_receiver
+    id: "ww"
+    nec:
+      address: 0xEF00
+      command: 0xF30C
+    on_press:
+      then:
+        - globals.set: { id: active_light, value: '0' }
+        - light.turn_on:
+            id: cct_light
+            color_temperature: 2700 K
+  - platform: remote_receiver
+    id: "nw"
+    nec:
+      address: 0xEF00
+      command: 0xF20D
+    on_press:
+      then:
+        - globals.set: { id: active_light, value: '0' }
+        - light.turn_on:
+            id: cct_light
+            color_temperature: 4000 K
+  - platform: remote_receiver
+    id: "cw"
+    nec:
+      address: 0xEF00
+      command: 0xF10E
+    on_press:
+      then:
+        - globals.set: { id: active_light, value: '0' }
+        - light.turn_on:
+            id: cct_light
+            color_temperature: 6500 K
+  - platform: remote_receiver
+    id: "color_up"
+    nec:
+      address: 0xEF00
+      command: 0xF00F
+    on_press:
+      then:
+        - globals.set: { id: active_light, value: '1' }
+        - light.turn_on: rgb_light
+        - script.execute: next_color
+
+  # Remote sixth row
+  - platform: remote_receiver
+    id: "speed_plus"
+    nec:
+      address: 0xEF00
+      command: 0xEF10
+    on_press:
+      then:
+        - globals.set: { id: active_light, value: '1' }
+        - script.execute: speed_up
+  - platform: remote_receiver
+    id: "mode"
+    nec:
+      address: 0xEF00
+      command: 0xEE11
+    on_press:
+      then:
+        - globals.set: { id: active_light, value: '1' }
+        - light.turn_on: rgb_light
+        - script.execute: next_effect
+
+  - platform: remote_receiver
+    id: "speed_minus"
+    nec:
+      address: 0xEF00
+      command: 0xED12
+    on_press:
+      then:
+        - globals.set: { id: active_light, value: '1' }
+        - script.execute: speed_down
+
+  - platform: remote_receiver
+    id: "color_down"
+    nec:
+      address: 0xEF00
+      command: 0xEC13
+    on_press:
+      then:
+        - globals.set: { id: active_light, value: '1' }
+        - light.turn_on: rgb_light
+        - script.execute: prev_color
+
+  # Remote seventh row
+  - platform: remote_receiver
+    id: "music_1"
+    nec:
+      address: 0xEF00
+      command: 0xEB14
+    on_press:
+      then:
+        - globals.set: { id: active_light, value: '1' }
+        - lambda: |-
+            id(current_effect_name) = "Sound Rainbow Effect";
+        - light.turn_on: { id: rgb_light, effect: "Sound Rainbow Effect" }
+  - platform: remote_receiver
+    id: "music_2"
+    nec:
+      address: 0xEF00
+      command: 0xEA15
+    on_press:
+      then:
+        - globals.set: { id: active_light, value: '1' }
+        - lambda: |-
+            id(current_effect_name) = "Sound Pulse Effect";
+        - light.turn_on: { id: rgb_light, effect: "Sound Pulse Effect" }
+  - platform: remote_receiver
+    id: "music_3"
+    nec:
+      address: 0xEF00
+      command: 0xE916
+    on_press:
+      then:
+        - globals.set: { id: active_light, value: '1' }
+        - lambda: |-
+            id(current_effect_name) = "Sound Fireworks Effect";
+        - light.turn_on: { id: rgb_light, effect: "Sound Fireworks Effect" }
+  - platform: remote_receiver
+    id: "music_4"
+    nec:
+      address: 0xEF00
+      command: 0xE817
+    on_press:
+      then:
+        - globals.set: { id: active_light, value: '1' }
+        - lambda: |-
+            id(current_effect_name) = "Sound Bass Flash Effect";
+        - light.turn_on: { id: rgb_light, effect: "Sound Bass Flash Effect" }
+
+sensor:
+  - platform: adc
+    id: mic
+    pin: ADC3
+    internal: false
+    name: "Mic"
+    update_interval: 50ms
+    filters:
+      - lambda: |-
+          float gain = id(mic_sensitivity).state; 
+          return x * gain;
+      - lambda: |-
+          float gain = id(mic_sensitivity).state;
+          float noise = id(mic_noise_floor).state;
+          float v = (x - noise);
+          if (v < 0) v = 0;
+          return v * gain;
+
+number:
+  - platform: template
+    name: "MIC Sensitivity"
+    id: mic_sensitivity
+    min_value: 0.1
+    max_value: 5.0
+    step: 0.1
+    optimistic: true
+    initial_value: 2.5
+
+  - platform: template
+    id: mic_noise_floor
+    name: "MIC noise floor level"
+    min_value: 0.0
+    max_value: 0.2
+    step: 0.01
+    optimistic: true
+    initial_value: 0
+
+  - platform: template
+    id: led_length
+    name: "LED length"
+    min_value: 1
+    max_value: 100  # sets the maximum
+    step: 1
+    optimistic: true
+    initial_value: 50
+
+globals:
+  - id: cct_brightness  # Brightness CCT Lamp
+    type: float
+    initial_value: '1.0'
+  - id: cct_temp        # Color temperature CCT Lamp, 0=cold 1=warm
+    type: float
+    initial_value: '1'
+  - id: button_press_time
+    type: int
+    initial_value: '0'
+  - id: active_light
+    type: int
+    restore_value: no
+    initial_value: '0'   # 0 = CCT, 1 = RGB
+  - id: current_effect_index
+    type: int
+    restore_value: no
+    initial_value: '0'
+  - id: cct_temp_index
+    type: int
+    initial_value: '0'
+  - id: rgb_just_turned_on
+    type: bool
+    restore_value: no
+    initial_value: 'true'
+  - id: current_effect_name
+    type: std::string
+    restore_value: no
+    initial_value: "\"Rainbow_S4\""
+  - id: effect_order
+    type: std::vector<std::string>
+    restore_value: no
+    initial_value: '{ "Rainbow","Scan","ColorWipe","Twinkle","RandomTwinkle","Fireworks","Pulse","Random","Sound Rainbow Effect","Sound Pulse Effect","Sound Fireworks Effect","Sound Bass Flash Effect" }'
+  - id: color_order
+    type: std::vector<std::array<float,3>>
+    restore_value: no
+    initial_value: '{ {100,0,0}, {0,100,0}, {0,0,100}, {100,40,0}, {50,100,0}, {0,100,100}, {100,100,0}, {0,80,100}, {100,0,100} }'
+                    #     {100,   0,   0},   // RED
+                    #     {  0, 100,   0},   // GREEN
+                    #     {  0,   0, 100},   // BLUE
+                    #     {100,  40,   0},   // ORANGE
+                    #     { 50, 100,   0},   // LIGHT GREEN
+                    #     {  0, 100, 100},   // CYAN (jasny)
+                    #     {100, 100,   0},   // YELLOW
+                    #     {  0,  80, 100},   // TEAL (ciemniejszy)
+                    #     {100,   0, 100}    // PURPLE
+  - id: current_color_index
+    type: int
+    restore_value: no
+    initial_value: '0'
+  - id: active_timer
+    type: int
+    restore_value: no
+    initial_value: '-1'   # -1 = no active timer
+
+script:
+  - id: next_effect
+    mode: restart
+    then:
+      - lambda: |-
+          auto &list = id(effect_order);
+
+          // If RGB was just turned on → set start effect
+          if (id(rgb_just_turned_on)) {
+            id(rgb_just_turned_on) = false;
+
+            id(current_effect_index) = 0;     // Rainbow
+            auto call = id(rgb_light).make_call();
+            call.set_effect("Rainbow_S4");
+            call.perform();
+            return;
+          }
+
+          // Normal effect switching
+          id(current_effect_index)++;
+          if (id(current_effect_index) >= list.size())
+            id(current_effect_index) = 0;
+
+          std::string base = list[id(current_effect_index)];
+          std::string next = base;
+
+          // Effects with speed → always on S4
+          if (base != "Random" &&
+              base != "Sound Rainbow Effect" &&
+              base != "Sound Pulse Effect" &&
+              base != "Sound Fireworks Effect" &&
+              base != "Sound Bass Flash Effect") {
+            next = base + "_S4";
+          }
+
+          id(current_effect_name) = next;
+
+          auto call = id(rgb_light).make_call();
+          call.set_effect(next);
+          call.perform();
+
+  - id: speed_up
+    mode: restart
+    then:
+      - lambda: |-
+          std::string current = id(current_effect_name);
+
+          // Effects without speed
+          if (current == "Random" ||
+              current == "Sound Rainbow Effect" ||
+              current == "Sound Pulse Effect" ||
+              current == "Sound Fireworks Effect" ||
+              current == "Sound Bass Flash Effect") {
+            return;
+          }
+
+          size_t pos = current.find("_S");
+          if (pos == std::string::npos) return;
+
+          std::string base = current.substr(0, pos);
+          int num = atoi(current.substr(pos + 2).c_str());
+
+          if (num < 7) num++;
+
+          std::string next = base + "_S" + std::to_string(num);
+
+          id(current_effect_name) = next;
+
+          auto call = id(rgb_light).make_call();
+          call.set_effect(next);
+          call.perform();
+
+  - id: speed_down
+    mode: restart
+    then:
+      - lambda: |-
+          std::string current = id(current_effect_name);
+
+          // Effects without speed
+          if (current == "Random" ||
+              current == "Sound Rainbow Effect" ||
+              current == "Sound Pulse Effect" ||
+              current == "Sound Fireworks Effect" ||
+              current == "Sound Bass Flash Effect") {
+            return;
+          }
+
+          size_t pos = current.find("_S");
+          if (pos == std::string::npos) return;
+
+          std::string base = current.substr(0, pos);
+          int num = atoi(current.substr(pos + 2).c_str());
+
+          if (num > 1) num--;
+
+          std::string next = base + "_S" + std::to_string(num);
+
+          id(current_effect_name) = next;
+
+          auto call = id(rgb_light).make_call();
+          call.set_effect(next);
+          call.perform();
+
+  - id: next_color
+    mode: restart
+    then:
+      - lambda: |-
+          auto &colors = id(color_order);
+
+          id(current_color_index)++;
+          if (id(current_color_index) >= colors.size())
+            id(current_color_index) = 0;
+
+          auto c = colors[id(current_color_index)];
+
+          auto call = id(rgb_light).make_call();
+          call.set_rgb(c[0] / 100.0f, c[1] / 100.0f, c[2] / 100.0f);
+          call.perform();
+
+  - id: prev_color
+    mode: restart
+    then:
+      - lambda: |-
+          auto &colors = id(color_order);
+
+          id(current_color_index)--;
+          if (id(current_color_index) < 0)
+            id(current_color_index) = colors.size() - 1;
+
+          auto c = colors[id(current_color_index)];
+
+          auto call = id(rgb_light).make_call();
+          call.set_rgb(c[0] / 100.0f, c[1] / 100.0f, c[2] / 100.0f);
+          call.perform();
+
+  - id: apply_color
+    mode: restart
+    then:
+      - lambda: |-
+          auto &colors = id(color_order);
+          auto c = colors[id(current_color_index)];
+
+          auto call = id(rgb_light).make_call();
+          call.set_rgb(c[0] / 100.0f, c[1] / 100.0f, c[2] / 100.0f);
+          call.perform();
+
+  - id: next_cct_temp
+    mode: restart
+    then:
+      - lambda: |-
+          const float temps_mired[3] = {
+            1000000.0f / 2700.0f,
+            1000000.0f / 4000.0f,
+            1000000.0f / 6500.0f
+          };
+
+          id(cct_temp_index)++;
+          if (id(cct_temp_index) > 2)
+            id(cct_temp_index) = 0;
+
+          auto call = id(cct_light).make_call();
+          call.set_color_temperature(temps_mired[id(cct_temp_index)]);
+          call.perform();
+
+  - id: timer_1h_script
+    mode: restart
+    then:
+      - lambda: |-
+          id(active_timer) = 1;
+      - delay: 1h
+      - lambda: |-
+          if (id(active_timer) != 1) return;
+      - light.turn_off: rgb_light
+      - light.turn_off: cct_light
+      - lambda: |-
+          id(active_timer) = -1;
+
+  - id: timer_2h_script
+    mode: restart
+    then:
+      - lambda: |-
+          id(active_timer) = 2;
+      - delay: 2h
+      - lambda: |-
+          if (id(active_timer) != 2) return;
+      - light.turn_off: rgb_light
+      - light.turn_off: cct_light
+      - lambda: |-
+          id(active_timer) = -1;
+
+  - id: timer_3h_script
+    mode: restart
+    then:
+      - lambda: |-
+          id(active_timer) = 3;
+      - delay: 3h
+      - lambda: |-
+          if (id(active_timer) != 3) return;
+      - light.turn_off: rgb_light
+      - light.turn_off: cct_light
+      - lambda: |-
+          id(active_timer) = -1;
+
+output:
+  - platform: gpio   # output is a power-relay, to switch the LED strip
+    id: power    
+    pin: P22
+
+# Template CCT
+  - platform: template
+    id: cct_temp_out
+    type: float
+    write_action:
+      - lambda: |-
+          id(cct_temp) = state;
+          float cw = 1.0f - state;   // cold
+          float ww = state;          // warm
+          auto call = id(cct_raw).make_call();
+          call.set_state(true);
+          call.set_brightness(id(cct_brightness));
+          call.set_red_if_supported(cw);
+          call.set_green_if_supported(ww);
+          call.set_blue_if_supported(0.0f);
+          call.perform();
+
+  - platform: template
+    id: cct_bri_out
+    type: float
+    write_action:
+      - lambda: |-
+          id(cct_brightness) = state;
+          float cw = 1.0f - id(cct_temp);
+          float ww = id(cct_temp);
+          auto call = id(cct_raw).make_call();
+          call.set_state(true);
+          call.set_brightness(state);
+          call.set_red_if_supported(cw);
+          call.set_green_if_supported(ww);
+          call.set_blue_if_supported(0.0f);
+          call.perform();
+
+light:
+  #  Real strip SM16703
+  - platform: beken_spi_led_strip
+    id: RGBIC_CCTIC_ledstrip
+    rgb_order: GRB
+    pin: 16
+    num_leds: 100
+    chipset: SM16703
+    name: None
+    internal: true
+
+  - platform: color_temperature
+    id: cct_light
+    name: "CCT"
+    color_temperature: cct_temp_out
+    brightness: cct_bri_out
+    warm_white_color_temperature: 2700 K
+    cold_white_color_temperature: 6500 K
+    default_transition_length: 0s
+    on_turn_on:
+      then:
+        - if:
+            condition:
+              light.is_on: rgb_light
+            then:
+              - light.turn_off: rgb_light
+        - output.turn_on: power
+
+    on_turn_off:
+      then:
+        - if:
+            condition:
+              # light.is_off: rgb_light
+              lambda: 'return id(active_light) == 0;'
+            then:
+              - delay: 0.2s
+              - output.turn_off: power
+
+  - platform: partition
+    id: rgb_light
+    name: "RGB"
+    internal: false
+    default_transition_length: 0s
+
+    on_turn_on:
+      then:
+        - if:
+            condition:
+              light.is_on: cct_light
+            then:
+              - light.turn_off: cct_light
+        - output.turn_on: power
+        - lambda: |-
+            id(rgb_just_turned_on) = true;
+    on_turn_off:
+      then:
+        - if:
+            condition:
+              # light.is_off: cct_light
+              lambda: 'return id(active_light) == 1;'
+            then:
+              - delay: 0.2s
+              - output.turn_off: power
+
+    effects:
+          # Rainbow (speed — higher = faster)
+          - addressable_rainbow: { name: "Rainbow_S1", speed: 5 }
+          - addressable_rainbow: { name: "Rainbow_S2", speed: 10 }
+          - addressable_rainbow: { name: "Rainbow_S3", speed: 20 }
+          - addressable_rainbow: { name: "Rainbow_S4", speed: 40 }
+          - addressable_rainbow: { name: "Rainbow_S5", speed: 60 }
+          - addressable_rainbow: { name: "Rainbow_S6", speed: 90 }
+          - addressable_rainbow: { name: "Rainbow_S7", speed: 120 }
+
+          # Scan (move_interval — lower = faster)
+          - addressable_scan: { name: "Scan_S1", move_interval: 200ms }
+          - addressable_scan: { name: "Scan_S2", move_interval: 150ms }
+          - addressable_scan: { name: "Scan_S3", move_interval: 100ms }
+          - addressable_scan: { name: "Scan_S4", move_interval: 70ms }
+          - addressable_scan: { name: "Scan_S5", move_interval: 50ms }
+          - addressable_scan: { name: "Scan_S6", move_interval: 30ms }
+          - addressable_scan: { name: "Scan_S7", move_interval: 15ms }
+
+          # Color Wipe (add_led_interval — lower = faster)
+          - addressable_color_wipe: { name: "ColorWipe_S1", add_led_interval: 200ms }
+          - addressable_color_wipe: { name: "ColorWipe_S2", add_led_interval: 150ms }
+          - addressable_color_wipe: { name: "ColorWipe_S3", add_led_interval: 100ms }
+          - addressable_color_wipe: { name: "ColorWipe_S4", add_led_interval: 70ms }
+          - addressable_color_wipe: { name: "ColorWipe_S5", add_led_interval: 50ms }
+          - addressable_color_wipe: { name: "ColorWipe_S6", add_led_interval: 30ms }
+          - addressable_color_wipe: { name: "ColorWipe_S7", add_led_interval: 15ms }
+
+          # Twinkle (progress_interval — lower = faster)
+          - addressable_twinkle: { name: "Twinkle_S1", progress_interval: 200ms }
+          - addressable_twinkle: { name: "Twinkle_S2", progress_interval: 150ms }
+          - addressable_twinkle: { name: "Twinkle_S3", progress_interval: 100ms }
+          - addressable_twinkle: { name: "Twinkle_S4", progress_interval: 70ms }
+          - addressable_twinkle: { name: "Twinkle_S5", progress_interval: 50ms }
+          - addressable_twinkle: { name: "Twinkle_S6", progress_interval: 30ms }
+          - addressable_twinkle: { name: "Twinkle_S7", progress_interval: 15ms }
+
+          # Random Twinkle (progress_interval — lower = faster)
+          - addressable_random_twinkle: { name: "RandomTwinkle_S1", progress_interval: 200ms }
+          - addressable_random_twinkle: { name: "RandomTwinkle_S2", progress_interval: 150ms }
+          - addressable_random_twinkle: { name: "RandomTwinkle_S3", progress_interval: 100ms }
+          - addressable_random_twinkle: { name: "RandomTwinkle_S4", progress_interval: 70ms }
+          - addressable_random_twinkle: { name: "RandomTwinkle_S5", progress_interval: 50ms }
+          - addressable_random_twinkle: { name: "RandomTwinkle_S6", progress_interval: 30ms }
+          - addressable_random_twinkle: { name: "RandomTwinkle_S7", progress_interval: 15ms }
+
+          # Fireworks (update_interval — lower = faster)
+          - addressable_fireworks: { name: "Fireworks_S1", update_interval: 200ms }
+          - addressable_fireworks: { name: "Fireworks_S2", update_interval: 150ms }
+          - addressable_fireworks: { name: "Fireworks_S3", update_interval: 100ms }
+          - addressable_fireworks: { name: "Fireworks_S4", update_interval: 70ms }
+          - addressable_fireworks: { name: "Fireworks_S5", update_interval: 50ms }
+          - addressable_fireworks: { name: "Fireworks_S6", update_interval: 30ms }
+          - addressable_fireworks: { name: "Fireworks_S7", update_interval: 15ms }
+
+          # Pulse (transition_length — lower = faster)
+          - pulse: { name: "Pulse_S1", transition_length: 3000ms }
+          - pulse: { name: "Pulse_S2", transition_length: 2600ms }
+          - pulse: { name: "Pulse_S3", transition_length: 2200ms }
+          - pulse: { name: "Pulse_S4", transition_length: 1800ms }
+          - pulse: { name: "Pulse_S5", transition_length: 1500ms }
+          - pulse: { name: "Pulse_S6", transition_length: 1300ms }
+          - pulse: { name: "Pulse_S7", transition_length: 1100ms }
+
+          # Random (transition_length — lower = faster)
+          - random: { name: "Random", transition_length: 200ms }
+
+          - addressable_lambda:
+              name: "Sound Rainbow Effect"
+              update_interval: 50ms
+              lambda: |-
+                float mic_level = id(mic).get_state();
+                float normalized = min(mic_level, 1.0f);
+                int length = id(led_length).state;
+                int strip_size = it.size();
+                if (length > strip_size) length = strip_size;
+                int center = length / 2;
+                int max_distance = floor(normalized * (length / 2));
+                for (int i = 0; i < strip_size; i++) {
+                  if (i % 2 == 1) {
+                    it[i] = Color(0,0,0);
+                    continue;
+                  }
+                  if (i >= length) {
+                    it[i] = Color(0,0,0);
+                    continue;
+                  }
+                  int distance = abs(i - center);
+                  if (distance <= max_distance) {
+                    float hue = (float)i / length * 360.0f;
+                    float h = hue;
+                    float s = 1.0f;
+                    float v = 1.0f;
+                    int sector = ((int)floor(h / 60.0f)) % 6;
+                    float f = (h / 60.0f) - floor(h / 60.0f);
+                    float p = v * (1.0f - s);
+                    float q = v * (1.0f - f * s);
+                    float t = v * (1.0f - (1.0f - f) * s);
+                    float r,g,b;
+                    if (sector == 0) { r=v; g=t; b=p; }
+                    else if (sector == 1) { r=q; g=v; b=p; }
+                    else if (sector == 2) { r=p; g=v; b=t; }
+                    else if (sector == 3) { r=p; g=q; b=v; }
+                    else if (sector == 4) { r=t; g=p; b=v; }
+                    else { r=v; g=p; b=q; }
+                    it[i] = Color(r*255, g*255, b*255);
+                  } else {
+                    it[i] = Color(0,0,0);
+                  }
+                }
+          - addressable_lambda:
+              name: "Sound Pulse Effect"
+              update_interval: 30ms
+              lambda: |-
+                float mic_level = id(mic).get_state();
+                float v = min(mic_level * 3.0f, 1.0f);
+                int length = id(led_length).state;
+                int strip_size = it.size();
+                if (length > strip_size) length = strip_size;
+                for (int i = 0; i < strip_size; i++) {
+                  if (i % 2 == 1) {
+                    it[i] = Color(0,0,0);
+                    continue;
+                  }
+                  if (i >= length) {
+                    it[i] = Color(0,0,0);
+                    continue;
+                  }
+                  uint8_t r = 255 * v;
+                  uint8_t g = 40 * v;
+                  uint8_t b = 40 * v;
+                  it[i] = Color(r, g, b);
+                }
+          - addressable_lambda:
+              name: "Sound Fireworks Effect"
+              update_interval: 40ms
+              lambda: |-
+                float mic_level = id(mic).get_state();
+                int length = id(led_length).state;
+                int strip_size = it.size();
+                if (length > strip_size) length = strip_size;
+                for (int i = 0; i < strip_size; i++) {
+                  if (i % 2 == 1) {
+                    it[i] = Color(0,0,0);
+                    continue;
+                  }
+                  if (i >= length) {
+                    it[i] = Color(0,0,0);
+                    continue;
+                  }
+                  if (mic_level > 0.12f && random_float() < mic_level) {
+                    uint8_t r = random_uint32() % 256;
+                    uint8_t g = random_uint32() % 256;
+                    uint8_t b = random_uint32() % 256;
+                    it[i] = Color(r, g, b);
+                  } else {
+                    it[i] = Color(0,0,0);
+                  }
+                }
+          - addressable_lambda:
+              name: "Sound Bass Flash Effect"
+              update_interval: 25ms
+              lambda: |-
+                float mic_level = id(mic).get_state();
+                int length = id(led_length).state;
+                int strip_size = it.size();
+                if (length > strip_size) length = strip_size;
+                bool flash = mic_level > 0.18f;
+                for (int i = 0; i < strip_size; i++) {
+                  if (i % 2 == 1) {
+                    it[i] = Color(0,0,0);
+                    continue;
+                  }
+                  if (i >= length) {
+                    it[i] = Color(0,0,0);
+                    continue;
+                  }
+                  if (flash) {
+                    it[i] = Color(255,255,255);
+                  } else {
+                    it[i] = Color(0,0,0);
+                  }
+                }
+
+    #  RGB segments (even addresses)
+    segments:
+      - id: RGBIC_CCTIC_ledstrip
+        from: 0
+        to: 0
+      - id: RGBIC_CCTIC_ledstrip
+        from: 2
+        to: 2
+      - id: RGBIC_CCTIC_ledstrip
+        from: 4
+        to: 4
+      - id: RGBIC_CCTIC_ledstrip
+        from: 6
+        to: 6
+      - id: RGBIC_CCTIC_ledstrip
+        from: 8
+        to: 8
+      - id: RGBIC_CCTIC_ledstrip
+        from: 10
+        to: 10
+      - id: RGBIC_CCTIC_ledstrip
+        from: 12
+        to: 12
+      - id: RGBIC_CCTIC_ledstrip
+        from: 14
+        to: 14
+      - id: RGBIC_CCTIC_ledstrip
+        from: 16
+        to: 16
+      - id: RGBIC_CCTIC_ledstrip
+        from: 18
+        to: 18
+      - id: RGBIC_CCTIC_ledstrip
+        from: 20
+        to: 20
+      - id: RGBIC_CCTIC_ledstrip
+        from: 22
+        to: 22
+      - id: RGBIC_CCTIC_ledstrip
+        from: 24
+        to: 24
+      - id: RGBIC_CCTIC_ledstrip
+        from: 26
+        to: 26
+      - id: RGBIC_CCTIC_ledstrip
+        from: 28
+        to: 28
+      - id: RGBIC_CCTIC_ledstrip
+        from: 30
+        to: 30
+      - id: RGBIC_CCTIC_ledstrip
+        from: 32
+        to: 32
+      - id: RGBIC_CCTIC_ledstrip
+        from: 34
+        to: 34
+      - id: RGBIC_CCTIC_ledstrip
+        from: 36
+        to: 36
+      - id: RGBIC_CCTIC_ledstrip
+        from: 38
+        to: 38
+      - id: RGBIC_CCTIC_ledstrip
+        from: 40
+        to: 40
+      - id: RGBIC_CCTIC_ledstrip
+        from: 42
+        to: 42
+      - id: RGBIC_CCTIC_ledstrip
+        from: 44
+        to: 44
+      - id: RGBIC_CCTIC_ledstrip
+        from: 46
+        to: 46
+      - id: RGBIC_CCTIC_ledstrip
+        from: 48
+        to: 48
+      - id: RGBIC_CCTIC_ledstrip
+        from: 50
+        to: 50
+      - id: RGBIC_CCTIC_ledstrip
+        from: 52
+        to: 52
+      - id: RGBIC_CCTIC_ledstrip
+        from: 54
+        to: 54
+      - id: RGBIC_CCTIC_ledstrip
+        from: 56
+        to: 56
+      - id: RGBIC_CCTIC_ledstrip
+        from: 58
+        to: 58
+      - id: RGBIC_CCTIC_ledstrip
+        from: 60
+        to: 60
+      - id: RGBIC_CCTIC_ledstrip
+        from: 62
+        to: 62
+      - id: RGBIC_CCTIC_ledstrip
+        from: 64
+        to: 64
+      - id: RGBIC_CCTIC_ledstrip
+        from: 66
+        to: 66
+      - id: RGBIC_CCTIC_ledstrip
+        from: 68
+        to: 68
+      - id: RGBIC_CCTIC_ledstrip
+        from: 70
+        to: 70
+      - id: RGBIC_CCTIC_ledstrip
+        from: 72
+        to: 72
+      - id: RGBIC_CCTIC_ledstrip
+        from: 74
+        to: 74
+      - id: RGBIC_CCTIC_ledstrip
+        from: 76
+        to: 76
+      - id: RGBIC_CCTIC_ledstrip
+        from: 78
+        to: 78
+      - id: RGBIC_CCTIC_ledstrip
+        from: 80
+        to: 80
+      - id: RGBIC_CCTIC_ledstrip
+        from: 82
+        to: 82
+      - id: RGBIC_CCTIC_ledstrip
+        from: 84
+        to: 84
+      - id: RGBIC_CCTIC_ledstrip
+        from: 86
+        to: 86
+      - id: RGBIC_CCTIC_ledstrip
+        from: 88
+        to: 88
+      - id: RGBIC_CCTIC_ledstrip
+        from: 90
+        to: 90
+      - id: RGBIC_CCTIC_ledstrip
+        from: 92
+        to: 92
+      - id: RGBIC_CCTIC_ledstrip
+        from: 94
+        to: 94
+      - id: RGBIC_CCTIC_ledstrip
+        from: 96
+        to: 96
+      - id: RGBIC_CCTIC_ledstrip
+        from: 98
+        to: 98
+
+  #  CCT segments (odd addresses)
+  - platform: partition
+    id: cct_raw
+    internal: true
+    segments:
+      - id: RGBIC_CCTIC_ledstrip
+        from: 1
+        to: 1
+      - id: RGBIC_CCTIC_ledstrip
+        from: 3
+        to: 3
+      - id: RGBIC_CCTIC_ledstrip
+        from: 5
+        to: 5
+      - id: RGBIC_CCTIC_ledstrip
+        from: 7
+        to: 7
+      - id: RGBIC_CCTIC_ledstrip
+        from: 9
+        to: 9
+      - id: RGBIC_CCTIC_ledstrip
+        from: 11
+        to: 11
+      - id: RGBIC_CCTIC_ledstrip
+        from: 13
+        to: 13
+      - id: RGBIC_CCTIC_ledstrip
+        from: 15
+        to: 15
+      - id: RGBIC_CCTIC_ledstrip
+        from: 17
+        to: 17
+      - id: RGBIC_CCTIC_ledstrip
+        from: 19
+        to: 19
+      - id: RGBIC_CCTIC_ledstrip
+        from: 21
+        to: 21
+      - id: RGBIC_CCTIC_ledstrip
+        from: 23
+        to: 23
+      - id: RGBIC_CCTIC_ledstrip
+        from: 25
+        to: 25
+      - id: RGBIC_CCTIC_ledstrip
+        from: 27
+        to: 27
+      - id: RGBIC_CCTIC_ledstrip
+        from: 29
+        to: 29
+      - id: RGBIC_CCTIC_ledstrip
+        from: 31
+        to: 31
+      - id: RGBIC_CCTIC_ledstrip
+        from: 33
+        to: 33
+      - id: RGBIC_CCTIC_ledstrip
+        from: 35
+        to: 35
+      - id: RGBIC_CCTIC_ledstrip
+        from: 37
+        to: 37
+      - id: RGBIC_CCTIC_ledstrip
+        from: 39
+        to: 39
+      - id: RGBIC_CCTIC_ledstrip
+        from: 41
+        to: 41
+      - id: RGBIC_CCTIC_ledstrip
+        from: 43
+        to: 43
+      - id: RGBIC_CCTIC_ledstrip
+        from: 45
+        to: 45
+      - id: RGBIC_CCTIC_ledstrip
+        from: 47
+        to: 47
+      - id: RGBIC_CCTIC_ledstrip
+        from: 49
+        to: 49
+      - id: RGBIC_CCTIC_ledstrip
+        from: 51
+        to: 51
+      - id: RGBIC_CCTIC_ledstrip
+        from: 53
+        to: 53
+      - id: RGBIC_CCTIC_ledstrip
+        from: 55
+        to: 55
+      - id: RGBIC_CCTIC_ledstrip
+        from: 57
+        to: 57
+      - id: RGBIC_CCTIC_ledstrip
+        from: 59
+        to: 59
+      - id: RGBIC_CCTIC_ledstrip
+        from: 61
+        to: 61
+      - id: RGBIC_CCTIC_ledstrip
+        from: 63
+        to: 63
+      - id: RGBIC_CCTIC_ledstrip
+        from: 65
+        to: 65
+      - id: RGBIC_CCTIC_ledstrip
+        from: 67
+        to: 67
+      - id: RGBIC_CCTIC_ledstrip
+        from: 69
+        to: 69
+      - id: RGBIC_CCTIC_ledstrip
+        from: 71
+        to: 71
+      - id: RGBIC_CCTIC_ledstrip
+        from: 73
+        to: 73
+      - id: RGBIC_CCTIC_ledstrip
+        from: 75
+        to: 75
+      - id: RGBIC_CCTIC_ledstrip
+        from: 77
+        to: 77
+      - id: RGBIC_CCTIC_ledstrip
+        from: 79
+        to: 79
+      - id: RGBIC_CCTIC_ledstrip
+        from: 81
+        to: 81
+      - id: RGBIC_CCTIC_ledstrip
+        from: 83
+        to: 83
+      - id: RGBIC_CCTIC_ledstrip
+        from: 85
+        to: 85
+      - id: RGBIC_CCTIC_ledstrip
+        from: 87
+        to: 87
+      - id: RGBIC_CCTIC_ledstrip
+        from: 89
+        to: 89
+      - id: RGBIC_CCTIC_ledstrip
+        from: 91
+        to: 91
+      - id: RGBIC_CCTIC_ledstrip
+        from: 93
+        to: 93
+      - id: RGBIC_CCTIC_ledstrip
+        from: 95
+        to: 95
+      - id: RGBIC_CCTIC_ledstrip
+        from: 97
+        to: 97
+      - id: RGBIC_CCTIC_ledstrip
+        from: 99
+        to: 99
