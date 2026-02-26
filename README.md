@@ -23,4 +23,4 @@ What works?
 ##    Effect speed +/- (native ESPHome effects with 7 speed presets)
 ##    Mode button to change effects (always speed 4 after change)
 ##    UP/DOWN Buttons to change static colors
-##    Music buttons with four Music
+##    Music buttons with four Music effects: Sound Rainbow Effect, Sound Pulse Effect, Sound Fireworks Effect, Sound Bass Flash Effect
